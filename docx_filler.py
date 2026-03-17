@@ -19,11 +19,13 @@ def extract_placeholders(docx_bytes: bytes, open_delim: str, close_delim: str) -
     """Извлекает все плейсхолдеры из .docx файла."""
     placeholders = set()
     
-    # Escape delimiters for regex
-    esc_open = re.escape(open_delim)
-    esc_close = re.escape(close_delim)
-    pattern = re.compile(f"{esc_open}(.*?){esc_close}")
-    xml_tag_pattern = re.compile(r"<[^>]+>")
+    def build_regex(s):
+        return r'(?:<[^>]+>)*'.join(re.escape(c) for c in s)
+        
+    esc_open = build_regex(open_delim)
+    esc_close = build_regex(close_delim)
+    pattern = re.compile(f"{esc_open}(.*?){esc_close}", flags=re.DOTALL)
+    xml_tag_pattern = re.compile(r"<[^>]+>", flags=re.DOTALL)
     
     with zipfile.ZipFile(io.BytesIO(docx_bytes)) as zf:
         for name in zf.namelist():
@@ -36,106 +38,35 @@ def extract_placeholders(docx_bytes: bytes, open_delim: str, close_delim: str) -
     return placeholders
 
 
-def _merge_runs_in_paragraph(para_elem):
-    """
-    Склеивает соседние <w:r> с одинаковым форматированием в параграфе.
-    Это решает проблему, когда Word разбивает {{ФИО}} на несколько runs.
-    """
-    runs = para_elem.findall(f".//{W}r")
-    if len(runs) < 2:
-        return
-    
-    # Группируем соседние runs с одинаковым rPr
-    i = 0
-    children = list(para_elem)
-    
-    while i < len(children) - 1:
-        curr = children[i]
-        nxt = children[i + 1]
-        
-        # Только если оба — w:r
-        if curr.tag != f"{W}r" or nxt.tag != f"{W}r":
-            i += 1
-            continue
-        
-        # Сравниваем форматирование
-        curr_rpr = etree.tostring(curr.find(f"{W}rPr")) if curr.find(f"{W}rPr") is not None else b""
-        nxt_rpr = etree.tostring(nxt.find(f"{W}rPr")) if nxt.find(f"{W}rPr") is not None else b""
-        
-        if curr_rpr != nxt_rpr:
-            i += 1
-            continue
-        
-        # Склеиваем текст
-        curr_t = curr.find(f"{W}t")
-        nxt_t = nxt.find(f"{W}t")
-        
-        if curr_t is None or nxt_t is None:
-            i += 1
-            continue
-        
-        curr_text = curr_t.text or ""
-        nxt_text = nxt_t.text or ""
-        merged = curr_text + nxt_text
-        
-        curr_t.text = merged
-        if merged != merged.strip():
-            curr_t.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
-        
-        # Удаляем следующий run
-        para_elem.remove(nxt)
-        children = list(para_elem)
-        # Не увеличиваем i — проверяем снова с текущей позиции
-    
-    return
-
-
-def _replace_in_run(run_elem, replacements: dict, open_delim: str, close_delim: str):
-    """Заменяет плейсхолдеры в тексте одного run."""
-    t_elem = run_elem.find(f"{W}t")
-    if t_elem is None or not t_elem.text:
-        return
-    
-    text = t_elem.text
-    changed = False
-    
-    for key, value in replacements.items():
-        placeholder = f"{open_delim}{key}{close_delim}"
-        if placeholder in text:
-            text = text.replace(placeholder, value)
-            changed = True
-    
-    if changed:
-        t_elem.text = text
-        # Если в тексте есть пробелы по краям — нужен xml:space="preserve"
-        if text != text.strip():
-            t_elem.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
-
-
 def _process_xml_content(xml_bytes: bytes, replacements: dict, open_delim: str, close_delim: str) -> bytes:
     """
-    Обрабатывает XML-файл документа:
-    1. Парсит XML
-    2. Для каждого параграфа склеивает runs
-    3. Заменяет плейсхолдеры в runs
-    4. Возвращает изменённый XML
+    Обрабатывает XML-файл документа, заменяя переменные напрямую в строке.
     """
-    try:
-        root = etree.fromstring(xml_bytes)
-    except etree.XMLSyntaxError:
-        return xml_bytes
+    content = xml_bytes.decode("utf-8", errors="ignore")
     
-    # Обрабатываем все параграфы (w:p) в документе
-    for para in root.iter(f"{W}p"):
-        _merge_runs_in_paragraph(para)
-        for run in para.findall(f".//{W}r"):
-            _replace_in_run(run, replacements, open_delim, close_delim)
+    def build_regex(s):
+        return r'(?:<[^>]+>)*'.join(re.escape(c) for c in s)
+        
+    esc_open = build_regex(open_delim)
+    esc_close = build_regex(close_delim)
+    pattern = re.compile(f"{esc_open}(.*?){esc_close}", flags=re.DOTALL)
+    xml_tag_pattern = re.compile(r"<[^>]+>", flags=re.DOTALL)
     
-    # Также обрабатываем текст вне параграфов (на всякий случай)
-    for run in root.iter(f"{W}r"):
-        _replace_in_run(run, replacements, open_delim, close_delim)
+    def replace_match(match):
+        raw_inner = match.group(1)
+        clean_name = xml_tag_pattern.sub("", raw_inner)
+        
+        if clean_name in replacements:
+            val = str(replacements[clean_name])
+            # Escape specially for XML
+            val = val.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            return val
+        
+        return match.group(0)
+        
+    result_content = pattern.sub(replace_match, content)
     
-    return etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
+    return result_content.encode("utf-8")
 
 
 def fill_template(
