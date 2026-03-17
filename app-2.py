@@ -42,14 +42,37 @@ fmt_map = {
 }
 open_delim, close_delim = fmt_map[placeholder_format]
 
+import subprocess
+import tempfile
+
 # --- Step 1: Upload templates ---
 st.header("1️⃣ Загрузите шаблоны документов")
 uploaded_templates = st.file_uploader(
-    "Выберите до 5 файлов Word (.docx)",
-    type=["docx"],
+    "Выберите до 5 файлов Word (.docx, .doc)",
+    type=["docx", "doc"],
     accept_multiple_files=True,
     help="Шаблоны с плейсхолдерами в формате {{КОЛОНКА}}"
 )
+
+def convert_doc_to_docx(doc_bytes: bytes, filename: str) -> bytes:
+    """Converts a .doc file to .docx format using macOS textutil."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_doc_path = os.path.join(temp_dir, filename)
+        temp_docx_path = os.path.join(temp_dir, filename + "x")
+        
+        with open(temp_doc_path, "wb") as f:
+            f.write(doc_bytes)
+            
+        try:
+            subprocess.run(["textutil", "-convert", "docx", "-output", temp_docx_path, temp_doc_path], check=True, capture_output=True)
+            with open(temp_docx_path, "rb") as f:
+                return f.read()
+        except subprocess.CalledProcessError as e:
+            st.error(f"Ошибка конвертации файла {filename}: {e.stderr.decode()}")
+            return b""
+        except Exception as e:
+             st.error(f"Ошибка конвертации файла {filename}: {e}")
+             return b""
 
 if uploaded_templates:
     if len(uploaded_templates) > 5:
@@ -58,16 +81,30 @@ if uploaded_templates:
 
     st.success(f"✅ Загружено шаблонов: {len(uploaded_templates)}")
     
+    # Pre-process uploaded files to ensure they are .docx bytes
+    processed_templates = []
+    for tmpl in uploaded_templates:
+        tmpl.seek(0)
+        file_bytes = tmpl.read()
+        if tmpl.name.endswith(".doc"):
+            converted_bytes = convert_doc_to_docx(file_bytes, tmpl.name)
+            if converted_bytes:
+                processed_templates.append({"name": tmpl.name + "x", "bytes": converted_bytes})
+        else:
+             processed_templates.append({"name": tmpl.name, "bytes": file_bytes})
+             
+    if not processed_templates:
+        st.error("❌ Не удалось обработать загруженные шаблоны.")
+        st.stop()
+        
     # Show placeholders found in each template
     with st.expander("🔍 Найденные переменные в шаблонах", expanded=True):
         all_placeholders = set()
-        for tmpl in uploaded_templates:
-            tmpl.seek(0)
-            placeholders = extract_placeholders(tmpl.read(), open_delim, close_delim)
-            tmpl.seek(0)
+        for tmpl_data in processed_templates:
+            placeholders = extract_placeholders(tmpl_data["bytes"], open_delim, close_delim)
             all_placeholders.update(placeholders)
             cols = st.columns([2, 5])
-            cols[0].markdown(f"**{tmpl.name}**")
+            cols[0].markdown(f"**{tmpl_data['name']}**")
             if placeholders:
                 cols[1].markdown(" ".join([f"`{p}`" for p in sorted(placeholders)]))
             else:
@@ -135,25 +172,22 @@ if uploaded_templates and df is not None:
                 
                 replacements = {col: str(val) for col, val in row.items()}
                 
-                for tmpl_file in uploaded_templates:
-                    tmpl_file.seek(0)
+                for tmpl_data in processed_templates:
                     try:
                         filled_bytes = fill_template(
-                            tmpl_file.read(),
+                            tmpl_data["bytes"],
                             replacements,
                             open_delim,
                             close_delim
                         )
-                        file_path = f"{folder_name}/{tmpl_file.name}"
+                        file_path = f"{folder_name}/{tmpl_data['name']}"
                         zf.writestr(file_path, filled_bytes)
                     except Exception as e:
-                        errors.append(f"Строка {idx + 1}, файл {tmpl_file.name}: {e}")
-                    finally:
-                        tmpl_file.seek(0)
+                        errors.append(f"Строка {idx + 1}, файл {tmpl_data['name']}: {e}")
                     
                     processed += 1
                     progress = processed / total
-                    progress_bar.progress(progress, text=f"Обрабатываем: {folder_name} / {tmpl_file.name}")
+                    progress_bar.progress(progress, text=f"Обрабатываем: {folder_name} / {tmpl_data['name']}")
         
         progress_bar.progress(1.0, text="✅ Готово!")
         
