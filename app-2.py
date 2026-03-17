@@ -44,6 +44,8 @@ open_delim, close_delim = fmt_map[placeholder_format]
 
 import subprocess
 import tempfile
+import shutil
+import os
 
 # --- Step 1: Upload templates ---
 st.header("1️⃣ Загрузите шаблоны документов")
@@ -55,20 +57,36 @@ uploaded_templates = st.file_uploader(
 )
 
 def convert_doc_to_docx(doc_bytes: bytes, filename: str) -> bytes:
-    """Converts a .doc file to .docx format using macOS textutil."""
+    """Converts a .doc file to .docx format using LibreOffice or macOS textutil."""
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_doc_path = os.path.join(temp_dir, filename)
-        temp_docx_path = os.path.join(temp_dir, filename + "x")
+        # Expected path of output from LibreOffice
+        out_filename = filename + "x" if not filename.endswith(".docx") else filename
+        temp_docx_path = os.path.join(temp_dir, out_filename)
         
         with open(temp_doc_path, "wb") as f:
             f.write(doc_bytes)
             
         try:
-            subprocess.run(["textutil", "-convert", "docx", "-output", temp_docx_path, temp_doc_path], check=True, capture_output=True)
+            if shutil.which("libreoffice"):
+                subprocess.run(["libreoffice", "--headless", "--convert-to", "docx", "--outdir", temp_dir, temp_doc_path], check=True, capture_output=True)
+            elif shutil.which("soffice"):
+                subprocess.run(["soffice", "--headless", "--convert-to", "docx", "--outdir", temp_dir, temp_doc_path], check=True, capture_output=True)
+            elif shutil.which("textutil"):
+                subprocess.run(["textutil", "-convert", "docx", "-output", temp_docx_path, temp_doc_path], check=True, capture_output=True)
+            else:
+                 st.error(f"Не найдена утилита для конвертации (нужен LibreOffice или textutil).")
+                 return b""
+
+            # LibreOffice typically generates the file with .docx extension, replacing .doc
+            lo_out_path = os.path.join(temp_dir, os.path.splitext(filename)[0] + ".docx")
+            if os.path.exists(lo_out_path):
+                 temp_docx_path = lo_out_path
+
             with open(temp_docx_path, "rb") as f:
                 return f.read()
         except subprocess.CalledProcessError as e:
-            st.error(f"Ошибка конвертации файла {filename}: {e.stderr.decode()}")
+            st.error(f"Ошибка конвертации файла {filename}: {e.stderr.decode('utf-8', errors='ignore')}")
             return b""
         except Exception as e:
              st.error(f"Ошибка конвертации файла {filename}: {e}")
