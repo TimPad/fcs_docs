@@ -29,14 +29,9 @@ def extract_placeholders(docx_bytes: bytes, open_delim: str, close_delim: str) -
         for name in zf.namelist():
             if name.endswith(".xml"):
                 content = zf.read(name).decode("utf-8", errors="ignore")
-                matches = pattern.findall(content)
-                for raw_match in matches:
-                    clean_match = xml_tag_pattern.sub("", raw_match)
-                    if clean_match and clean_match != raw_match:
-                        # Only keep it if the clean match isn't just an empty string
-                        pass
-                    if clean_match:
-                      placeholders.add(clean_match)
+                clean_content = xml_tag_pattern.sub("", content)
+                matches = pattern.findall(clean_content)
+                placeholders.update(matches)
     
     return placeholders
 

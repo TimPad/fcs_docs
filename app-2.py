@@ -50,7 +50,7 @@ import os
 # --- Step 1: Upload templates ---
 st.header("1️⃣ Загрузите шаблоны документов")
 uploaded_templates = st.file_uploader(
-    "Выберите до 5 файлов Word (.docx, .doc)",
+    "Выберите до 10 файлов Word (.docx, .doc)",
     type=["docx", "doc"],
     accept_multiple_files=True,
     help="Шаблоны с плейсхолдерами в формате {{КОЛОНКА}}"
@@ -93,9 +93,9 @@ def convert_doc_to_docx(doc_bytes: bytes, filename: str) -> bytes:
              return b""
 
 if uploaded_templates:
-    if len(uploaded_templates) > 5:
-        st.warning("⚠️ Максимум 5 шаблонов. Будут использованы первые 5.")
-        uploaded_templates = uploaded_templates[:5]
+    if len(uploaded_templates) > 10:
+        st.warning("⚠️ Максимум 10 шаблонов. Будут использованы первые 10.")
+        uploaded_templates = uploaded_templates[:10]
 
     st.success(f"✅ Загружено шаблонов: {len(uploaded_templates)}")
     
@@ -118,9 +118,11 @@ if uploaded_templates:
     # Show placeholders found in each template
     with st.expander("🔍 Найденные переменные в шаблонах", expanded=True):
         all_placeholders = set()
+        template_placeholders = {}
         for tmpl_data in processed_templates:
             placeholders = extract_placeholders(tmpl_data["bytes"], open_delim, close_delim)
             all_placeholders.update(placeholders)
+            template_placeholders[tmpl_data['name']] = placeholders
             cols = st.columns([2, 5])
             cols[0].markdown(f"**{tmpl_data['name']}**")
             if placeholders:
@@ -160,7 +162,7 @@ st.header("3️⃣ Сгенерировать документы")
 if uploaded_templates and df is not None:
     # Cross-check placeholders vs columns
     if 'all_placeholders' in locals() and all_placeholders:
-        missing = all_placeholders - set(df.columns)
+        missing_overall = all_placeholders - set(df.columns)
         matched = all_placeholders & set(df.columns)
         
         col1, col2 = st.columns(2)
@@ -168,8 +170,12 @@ if uploaded_templates and df is not None:
             if matched:
                 st.success(f"**Совпали:** {', '.join(f'`{p}`' for p in sorted(matched))}")
         with col2:
-            if missing:
-                st.warning(f"**Не найдены в таблице:** {', '.join(f'`{p}`' for p in sorted(missing))}")
+            if missing_overall:
+                st.warning("⚠️ **В таблице отсутствуют следующие колонки для шаблонов:**")
+                for t_name, t_pl in template_placeholders.items():
+                    missing_for_t = t_pl - set(df.columns)
+                    if missing_for_t:
+                        st.markdown(f"**{t_name}**: {', '.join(f'`{p}`' for p in sorted(missing_for_t))}")
     
     if st.button("🚀 Создать ZIP-архив", type="primary", use_container_width=True):
         progress_bar = st.progress(0, text="Начинаем...")
